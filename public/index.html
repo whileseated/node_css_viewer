@@ -1,0 +1,224 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<link rel="stylesheet" href="styles.css">
+<link rel="stylesheet" href="https://maxcdn.bootstrapcdn.com/bootstrap/4.0.0/css/bootstrap.min.css">
+<link href="https://fonts.googleapis.com/css2?family=Roboto:wght@400;500&display=swap" rel="stylesheet">
+<script src="https://cdnjs.cloudflare.com/ajax/libs/PapaParse/5.3.0/papaparse.min.js"></script>
+<title>CSV Uploader</title>
+</head>
+<body>
+    <div class="options-container">
+        <a href="#" id="toggleRankColumnLink" onclick="toggleRankColumn()">Rank</a>
+        <a href="#" id="toggleCheckmarkColumnLink" onclick="toggleCheckmarkColumn()">Checkmark</a>
+        <a href="#" id="showCheckedRowsLink" onclick="toggleCheckedRows()">Show Only Checked Rows</a>
+    </div>
+
+    <div class="container mt-3">
+        <div class="mb-3">
+            <input type="file" id="csvFile" class="form-control" accept=".csv" />
+        </div>
+        <div class="table-container" id="tableContainer">
+            <table class="table table-striped" id="csvTable">
+                <thead class="table-header"></thead>
+                <tbody class="table-body"></tbody>
+            </table>
+        </div>
+    </div>
+
+    <script>
+        let currentData = [];
+        let currentHeaders = null;
+        let showRankColumn = false;
+        let showCheckboxColumn = false;
+        let checkedRows = new Set();
+        let showCheckedRows = false;
+        let currentSort = { column: null, ascending: true }; // Define the current sorting state
+
+        document.getElementById('csvFile').addEventListener('change', uploadFile);
+
+        async function uploadFile() {
+    const csvFile = document.getElementById('csvFile').files[0];
+    if (csvFile) {
+        Papa.parse(csvFile, {
+            header: false, // We don't assume the first row is a header yet
+            dynamicTyping: true,
+            skipEmptyLines: true,
+            complete: function (results) {
+                const data = results.data;
+
+                // Ensure there's data in the CSV file
+                if (data.length === 0) {
+                    alert("The CSV file is empty.");
+                    return;
+                }
+
+                // Show the actual first row of the CSV in the alert for confirmation
+                const firstRow = data[0];
+                const rowValues = firstRow.join(', '); // Convert the row values to a comma-separated string
+
+                const confirmation = confirm(`Here is your first row of data:\n\n${rowValues}\n\nWould you like this row to become your header row?`);
+
+                if (confirmation) {
+                    currentHeaders = firstRow; // Use the first row as headers
+                    currentData = data.slice(1); // Skip the header row
+                } else {
+                    const numberOfColumns = firstRow.length;
+                    const newHeadersPrompt = `Please provide ${numberOfColumns} new headers separated by commas`;
+                    const newHeaders = prompt(newHeadersPrompt).split(',');
+                    currentHeaders = newHeaders.map(header => header.trim());
+                    currentData = data.slice(); // Keep the data but reformat it with new headers
+                }
+
+                // Map the remaining rows to the headers
+                currentData = currentData.map(row => {
+                    const mappedRow = {};
+                    currentHeaders.forEach((header, index) => {
+                        mappedRow[header] = row[index] !== undefined ? row[index] : '';
+                    });
+                    return mappedRow;
+                });
+
+                displayData(currentData); // Display the data in the table
+            },
+            error: function (error) {
+                console.error('Parsing Error:', error);
+                alert("An error occurred while parsing the CSV file.");
+            }
+        });
+    }
+}
+
+        function displayData(data) {
+            if (!data || data.length === 0 || !currentHeaders) {
+                console.error("No data or headers to display");
+                return;
+            }
+
+            const tableHeader = document.querySelector('.table-header');
+            const tableBody = document.querySelector('.table-body');
+
+            // Create the header row with sorting functionality
+            let headerRow = '<tr>';
+            if (showRankColumn) headerRow += '<th>Rank</th>';
+            if (showCheckboxColumn) headerRow += '<th>Check</th>';
+            currentHeaders.forEach((header, index) => {
+                headerRow += `<th class="sortable" onclick="sortData('${header}')">${header}</th>`;
+            });
+            headerRow += '</tr>';
+            tableHeader.innerHTML = headerRow;
+
+            // Create the data rows with drag-and-drop functionality
+            tableBody.innerHTML = '';
+            data.forEach((row, rowIndex) => {
+                let dataRow = `<tr draggable="true" ondragstart="handleDragStart(event, ${rowIndex})" ondragover="handleDragOver(event)" ondrop="handleDrop(event, ${rowIndex})">`;
+                if (showRankColumn) dataRow += `<td>${rowIndex + 1}</td>`;
+                if (showCheckboxColumn) {
+                    const isChecked = checkedRows.has(row.ID) ? 'checked' : '';
+                    dataRow += `<td><input type="checkbox" ${isChecked} onchange="handleCheckboxChange(${row.ID}, this)"></td>`;
+                }
+                currentHeaders.forEach(header => {
+                    dataRow += `<td>${row[header]}</td>`;
+                });
+                dataRow += '</tr>';
+                tableBody.innerHTML += dataRow;
+            });
+        }
+
+        function toggleRankColumn() {
+            showRankColumn = !showRankColumn;
+            document.getElementById('toggleRankColumnLink').classList.toggle('active', showRankColumn);
+            displayData(currentData);
+        }
+
+        function toggleCheckmarkColumn() {
+            showCheckboxColumn = !showCheckboxColumn;
+            document.getElementById('toggleCheckmarkColumnLink').classList.toggle('active', showCheckboxColumn);
+            displayData(currentData);
+        }
+
+        function handleCheckboxChange(rowID, checkboxElem) {
+            if (checkboxElem.checked) {
+                checkedRows.add(rowID);
+            } else {
+                checkedRows.delete(rowID);
+            }
+        }
+
+        function toggleCheckedRows() {
+            if (!showCheckedRows) {
+                const filteredData = currentData.filter(row => checkedRows.has(row.ID));
+                displayData(filteredData);
+                document.getElementById('showCheckedRowsLink').textContent = "Show All Rows";
+            } else {
+                displayData(currentData);
+                document.getElementById('showCheckedRowsLink').textContent = "Show Only Checked Rows";
+            }
+            showCheckedRows = !showCheckedRows;
+            document.getElementById('showCheckedRowsLink').classList.toggle('active', showCheckedRows);
+        }
+
+        function parseCSV(file) {
+            return new Promise((resolve, reject) => {
+                Papa.parse(file, {
+                    complete: (result) => {
+                        console.log('Parsed Data:', result.data); // Debugging line
+                        resolve(result.data);
+                    },
+                    header: true,
+                    skipEmptyLines: true,
+                    dynamicTyping: true,
+                    error: (error) => {
+                        console.error('Parsing Error:', error); // Error handling
+                        reject(error);
+                    },
+                });
+            });
+        }
+
+        // Drag-and-drop row reordering functionality
+        function handleDragStart(event, index) {
+            draggedRowIndex = index;
+            event.dataTransfer.effectAllowed = 'move';
+        }
+
+        function handleDragOver(event) {
+            event.preventDefault();
+            event.dataTransfer.dropEffect = 'move';
+        }
+
+        function handleDrop(event, index) {
+            event.preventDefault();
+            if (draggedRowIndex !== null) {
+                const draggedRow = currentData.splice(draggedRowIndex, 1)[0];
+                currentData.splice(index, 0, draggedRow);
+                displayData(currentData);
+            }
+        }
+
+        // Sorting functionality
+        function sortData(column) {
+            // Toggle sorting order if the same column is clicked again
+            if (currentSort.column === column) {
+                currentSort.ascending = !currentSort.ascending;
+            } else {
+                currentSort.column = column;
+                currentSort.ascending = true;
+            }
+
+            currentData.sort((a, b) => {
+                const valA = a[column];
+                const valB = b[column];
+
+                if (valA < valB) return currentSort.ascending ? -1 : 1;
+                if (valA > valB) return currentSort.ascending ? 1 : -1;
+                return 0;
+            });
+
+            displayData(currentData);
+        }
+    </script>
+</body>
+</html>
