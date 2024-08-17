@@ -37,7 +37,7 @@ This is a simple web application that allows users to upload and view CSV files 
 1. Clone the repository:
 
    ```bash
-   git clone https://github.com/your-username/csv-viewer.git
+   git clone https://github.com/whileseated/csv-viewer.git
    cd csv-viewer
    ```
 
@@ -69,7 +69,3 @@ This is a simple web application that allows users to upload and view CSV files 
 
 - The server is configured to handle uncaught exceptions and unhandled promise rejections gracefully.
 - Client-side error handling is implemented during CSV parsing to alert users in case of issues.
-
-## License
-
-This project is licensed under the ISC License.
