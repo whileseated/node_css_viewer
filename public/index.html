@@ -36,60 +36,62 @@
         let checkedRows = new Set();
         let showCheckedRows = false;
         let currentSort = { column: null, ascending: true }; // Define the current sorting state
+        let allData = []; // Store the complete dataset for toggling back
 
         document.getElementById('csvFile').addEventListener('change', uploadFile);
 
         async function uploadFile() {
-    const csvFile = document.getElementById('csvFile').files[0];
-    if (csvFile) {
-        Papa.parse(csvFile, {
-            header: false, // We don't assume the first row is a header yet
-            dynamicTyping: true,
-            skipEmptyLines: true,
-            complete: function (results) {
-                const data = results.data;
+            const csvFile = document.getElementById('csvFile').files[0];
+            if (csvFile) {
+                Papa.parse(csvFile, {
+                    header: false, // We don't assume the first row is a header yet
+                    dynamicTyping: true,
+                    skipEmptyLines: true,
+                    complete: function (results) {
+                        const data = results.data;
 
-                // Ensure there's data in the CSV file
-                if (data.length === 0) {
-                    alert("The CSV file is empty.");
-                    return;
-                }
+                        // Ensure there's data in the CSV file
+                        if (data.length === 0) {
+                            alert("The CSV file is empty.");
+                            return;
+                        }
 
-                // Show the actual first row of the CSV in the alert for confirmation
-                const firstRow = data[0];
-                const rowValues = firstRow.join(', '); // Convert the row values to a comma-separated string
+                        // Show the actual first row of the CSV in the alert for confirmation
+                        const firstRow = data[0];
+                        const rowValues = firstRow.join(', '); // Convert the row values to a comma-separated string
 
-                const confirmation = confirm(`Here is your first row of data:\n\n${rowValues}\n\nWould you like this row to become your header row?`);
+                        const confirmation = confirm(`Here is your first row of data:\n\n${rowValues}\n\nWould you like this row to become your header row?`);
 
-                if (confirmation) {
-                    currentHeaders = firstRow; // Use the first row as headers
-                    currentData = data.slice(1); // Skip the header row
-                } else {
-                    const numberOfColumns = firstRow.length;
-                    const newHeadersPrompt = `Please provide ${numberOfColumns} new headers separated by commas`;
-                    const newHeaders = prompt(newHeadersPrompt).split(',');
-                    currentHeaders = newHeaders.map(header => header.trim());
-                    currentData = data.slice(); // Keep the data but reformat it with new headers
-                }
+                        if (confirmation) {
+                            currentHeaders = firstRow; // Use the first row as headers
+                            currentData = data.slice(1); // Skip the header row
+                        } else {
+                            const numberOfColumns = firstRow.length;
+                            const newHeadersPrompt = `Please provide ${numberOfColumns} new headers separated by commas`;
+                            const newHeaders = prompt(newHeadersPrompt).split(',');
+                            currentHeaders = newHeaders.map(header => header.trim());
+                            currentData = data.slice(); // Keep the data but reformat it with new headers
+                        }
 
-                // Map the remaining rows to the headers
-                currentData = currentData.map(row => {
-                    const mappedRow = {};
-                    currentHeaders.forEach((header, index) => {
-                        mappedRow[header] = row[index] !== undefined ? row[index] : '';
-                    });
-                    return mappedRow;
+                        // Map the remaining rows to the headers, and add a unique ID
+                        currentData = currentData.map((row, index) => {
+                            const mappedRow = { ID: index + 1 }; // Assign a unique ID
+                            currentHeaders.forEach((header, i) => {
+                                mappedRow[header] = row[i] !== undefined ? row[i] : '';
+                            });
+                            return mappedRow;
+                        });
+
+                        allData = [...currentData]; // Store the full dataset
+                        displayData(currentData); // Display the data in the table
+                    },
+                    error: function (error) {
+                        console.error('Parsing Error:', error);
+                        alert("An error occurred while parsing the CSV file.");
+                    }
                 });
-
-                displayData(currentData); // Display the data in the table
-            },
-            error: function (error) {
-                console.error('Parsing Error:', error);
-                alert("An error occurred while parsing the CSV file.");
             }
-        });
-    }
-}
+        }
 
         function displayData(data) {
             if (!data || data.length === 0 || !currentHeaders) {
@@ -149,11 +151,13 @@
 
         function toggleCheckedRows() {
             if (!showCheckedRows) {
-                const filteredData = currentData.filter(row => checkedRows.has(row.ID));
+                // Only display rows that are checked
+                const filteredData = allData.filter(row => checkedRows.has(row.ID));
                 displayData(filteredData);
                 document.getElementById('showCheckedRowsLink').textContent = "Show All Rows";
             } else {
-                displayData(currentData);
+                // Show all rows again
+                displayData(allData);
                 document.getElementById('showCheckedRowsLink').textContent = "Show Only Checked Rows";
             }
             showCheckedRows = !showCheckedRows;
