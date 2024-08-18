@@ -69,3 +69,7 @@ This is a simple web application that allows users to upload and view CSV files 
 
 - The server is configured to handle uncaught exceptions and unhandled promise rejections gracefully.
 - Client-side error handling is implemented during CSV parsing to alert users in case of issues.
+
+## Todo
+
+- After showing all checked rows, drag-n-drop reordering reverts to show all rows
