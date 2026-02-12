@@ -376,6 +376,67 @@ app.put('/api/update/:filename', async (req, res) => {
   }
 });
 
+// GET /api/notes/:filename - Get notes for a saved CSV file
+app.get('/api/notes/:filename', async (req, res) => {
+  try {
+    const filename = sanitizeFilename(req.params.filename);
+    const filePath = path.join(SAVED_CSV_DIR, filename);
+
+    // Check if file exists
+    try {
+      await fs.access(filePath);
+    } catch {
+      return res.status(404).json({ success: false, error: 'File not found' });
+    }
+
+    const metadata = await readMetadata();
+    const notes = metadata[filename]?.notes || '';
+
+    res.json({
+      success: true,
+      notes: notes
+    });
+  } catch (error) {
+    console.error('Error getting notes:', error);
+    res.status(500).json({ success: false, error: 'Failed to get notes' });
+  }
+});
+
+// PUT /api/notes/:filename - Update notes for a saved CSV file
+app.put('/api/notes/:filename', async (req, res) => {
+  try {
+    const filename = sanitizeFilename(req.params.filename);
+    const filePath = path.join(SAVED_CSV_DIR, filename);
+    const notes = req.body.notes;
+
+    if (notes === undefined) {
+      return res.status(400).json({ success: false, error: 'No notes provided' });
+    }
+
+    // Check if file exists
+    try {
+      await fs.access(filePath);
+    } catch {
+      return res.status(404).json({ success: false, error: 'File not found' });
+    }
+
+    // Update metadata with notes
+    const metadata = await readMetadata();
+    if (metadata[filename]) {
+      metadata[filename].notes = notes;
+      await writeMetadata(metadata);
+    }
+
+    res.json({
+      success: true,
+      message: 'Notes updated successfully'
+    });
+  } catch (error) {
+    console.error('Error updating notes:', error);
+    res.status(500).json({ success: false, error: 'Failed to update notes' });
+  }
+});
+
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, async () => {
   console.log(`CSV/TSV Viewer server is running on http://localhost:${PORT}`);

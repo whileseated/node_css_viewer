@@ -785,3 +785,51 @@ th.column-drop-target {
     margin-top: 10px;
     justify-content: flex-end;
 }
+
+/* Notes Section */
+.notes-container {
+    margin-top: 15px;
+    border: 1px solid #ddd;
+    border-radius: 5px;
+    background-color: #fff;
+    padding: 10px;
+}
+
+.notes-header {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    margin-bottom: 8px;
+}
+
+.notes-header label {
+    font-size: 12px;
+    font-weight: 600;
+    color: #333;
+    font-family: 'Inter', sans-serif;
+}
+
+.notes-textarea {
+    width: 100%;
+    min-height: 100px;
+    padding: 8px 10px;
+    border: 1px solid #ddd;
+    border-radius: 3px;
+    font-size: 12px;
+    font-family: 'Source Code Pro', monospace;
+    background: #f9f9f9;
+    color: #333;
+    resize: vertical;
+    box-sizing: border-box;
+    line-height: 1.4;
+}
+
+.notes-textarea:focus {
+    border-color: #999;
+    outline: none;
+    background: #fff;
+}
+
+.notes-textarea::placeholder {
+    color: #999;
+}
