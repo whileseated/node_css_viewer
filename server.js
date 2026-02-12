@@ -8,32 +8,46 @@ const app = express();
 app.use(express.static('public'));
 app.use(express.json({ limit: '50mb' })); // Increase body size limit for large CSV files
 
+// Paths and limits
+const SAVED_CSV_DIR = path.join(__dirname, 'saved_csvs');
+const METADATA_FILE = path.join(SAVED_CSV_DIR, 'metadata.json');
+const METADATA_FILENAME = path.basename(METADATA_FILE);
+const ALLOWED_FILE_EXTENSIONS = ['.csv', '.tsv', '.txt'];
+const MAX_SEARCH_MATCHES = 1000;
+
 // Storage configuration for multer
 const storage = multer.diskStorage({
   destination: async (req, file, cb) => {
-    const uploadDir = path.join(__dirname, 'saved_csvs');
     try {
-      await fs.mkdir(uploadDir, { recursive: true });
-      cb(null, uploadDir);
+      await fs.mkdir(SAVED_CSV_DIR, { recursive: true });
+      cb(null, SAVED_CSV_DIR);
     } catch (error) {
       cb(error);
     }
   },
   filename: (req, file, cb) => {
-    // Sanitize filename - remove special characters, keep only alphanumeric, dots, dashes, underscores
-    const sanitized = file.originalname.replace(/[^a-zA-Z0-9.-_]/g, '_');
-    cb(null, sanitized);
+    const resolved = resolveSavedFile(file.originalname);
+    if (!resolved) {
+      const error = new Error('Invalid filename');
+      error.status = 400;
+      error.code = 'INVALID_FILENAME';
+      cb(error);
+      return;
+    }
+    cb(null, resolved.filename);
   }
 });
 
 // File filter to only allow CSV, TSV, and TXT files
 const fileFilter = (req, file, cb) => {
-  const allowedExtensions = ['.csv', '.tsv', '.txt'];
   const ext = path.extname(file.originalname).toLowerCase();
-  if (allowedExtensions.includes(ext)) {
+  if (ALLOWED_FILE_EXTENSIONS.includes(ext)) {
     cb(null, true);
   } else {
-    cb(new Error('Only CSV, TSV, and TXT files are allowed'));
+    const error = new Error('Only CSV, TSV, and TXT files are allowed');
+    error.status = 400;
+    error.code = 'INVALID_FILE_TYPE';
+    cb(error);
   }
 };
 
@@ -43,40 +57,143 @@ const upload = multer({
   limits: { fileSize: 10 * 1024 * 1024 } // 10MB limit
 });
 
-// Paths
-const SAVED_CSV_DIR = path.join(__dirname, 'saved_csvs');
-const METADATA_FILE = path.join(SAVED_CSV_DIR, 'metadata.json');
-
 // Helper function to read metadata
 async function readMetadata() {
   try {
     const data = await fs.readFile(METADATA_FILE, 'utf8');
     return JSON.parse(data);
   } catch (error) {
-    // If file doesn't exist or is invalid, return empty object
+    if (error.code !== 'ENOENT') {
+      console.warn('Metadata read failed, using empty metadata object:', error.message);
+    }
     return {};
   }
 }
 
 // Helper function to write metadata
 async function writeMetadata(metadata) {
-  await fs.writeFile(METADATA_FILE, JSON.stringify(metadata, null, 2), 'utf8');
+  const tempFile = `${METADATA_FILE}.tmp`;
+  await fs.mkdir(SAVED_CSV_DIR, { recursive: true });
+
+  try {
+    await fs.writeFile(tempFile, JSON.stringify(metadata, null, 2), 'utf8');
+    await fs.rename(tempFile, METADATA_FILE);
+  } catch (error) {
+    try {
+      await fs.unlink(tempFile);
+    } catch {
+      // Ignore cleanup errors from best-effort temp file removal.
+    }
+    throw error;
+  }
 }
 
 // Helper function to sanitize filename
 function sanitizeFilename(filename) {
-  return filename.replace(/[^a-zA-Z0-9.-_]/g, '_');
+  return String(filename || '').trim().replace(/[^a-zA-Z0-9._-]/g, '_');
+}
+
+function resolveSavedFile(filename) {
+  const sanitizedFilename = sanitizeFilename(filename);
+  if (
+    !sanitizedFilename ||
+    sanitizedFilename === '.' ||
+    sanitizedFilename === '..' ||
+    sanitizedFilename === METADATA_FILENAME
+  ) {
+    return null;
+  }
+
+  const filePath = path.resolve(SAVED_CSV_DIR, sanitizedFilename);
+  const relativePath = path.relative(path.resolve(SAVED_CSV_DIR), filePath);
+
+  if (relativePath.startsWith('..') || path.isAbsolute(relativePath)) {
+    return null;
+  }
+
+  return { filename: sanitizedFilename, filePath: filePath };
+}
+
+async function fileExists(filePath) {
+  try {
+    await fs.access(filePath);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+async function requireExistingSavedFile(res, filename) {
+  const target = resolveSavedFile(filename);
+  if (!target) {
+    res.status(400).json({ success: false, error: 'Invalid filename' });
+    return null;
+  }
+
+  if (!(await fileExists(target.filePath))) {
+    res.status(404).json({ success: false, error: 'File not found' });
+    return null;
+  }
+
+  return target;
+}
+
+function createDefaultMetadataEntry(filename, timestamp = new Date().toISOString()) {
+  return {
+    originalName: filename,
+    savedName: filename,
+    uploadedAt: timestamp,
+    lastModified: timestamp,
+    size: 0
+  };
+}
+
+async function mutateMetadata(mutator) {
+  const metadata = await readMetadata();
+  const changed = await mutator(metadata);
+
+  if (changed) {
+    await writeMetadata(metadata);
+  }
+
+  return metadata;
+}
+
+async function getExistingMetadataEntries(metadata) {
+  const entries = [];
+
+  for (const [filename, info] of Object.entries(metadata)) {
+    if (filename === METADATA_FILENAME) continue;
+
+    const target = resolveSavedFile(filename);
+    if (!target) {
+      console.warn(`Skipping invalid filename in metadata: ${filename}`);
+      continue;
+    }
+
+    if (!(await fileExists(target.filePath))) {
+      console.warn(`Skipping missing file in metadata: ${filename}`);
+      continue;
+    }
+
+    entries.push({
+      filename: target.filename,
+      filePath: target.filePath,
+      info: info
+    });
+  }
+
+  return entries;
 }
 
 function countQueryMatches(content, query) {
   if (!content || !query) return 0;
   let count = 0;
   let index = 0;
-  const limit = 1000;
 
   while ((index = content.indexOf(query, index)) !== -1) {
     count += 1;
-    if (count >= limit) break;
+    if (count >= MAX_SEARCH_MATCHES) break;
     index += query.length || 1;
   }
 
@@ -87,16 +204,24 @@ function countQueryMatches(content, query) {
 async function syncMetadataWithFiles() {
   try {
     const metadata = await readMetadata();
-    const files = await fs.readdir(SAVED_CSV_DIR);
+    await fs.mkdir(SAVED_CSV_DIR, { recursive: true });
+    const files = new Set(await fs.readdir(SAVED_CSV_DIR));
 
     // Remove metadata entries for files that don't exist
     let changed = false;
     for (const filename of Object.keys(metadata)) {
-      // Skip metadata.json itself and check if the actual CSV file exists
-      if (filename !== 'metadata.json' && !files.includes(filename)) {
+      if (filename === METADATA_FILENAME) {
         delete metadata[filename];
         changed = true;
-        console.log(`Removed orphaned metadata entry: ${filename}`);
+        console.log(`Removed reserved metadata entry: ${filename}`);
+        continue;
+      }
+
+      const target = resolveSavedFile(filename);
+      if (!target || !files.has(target.filename)) {
+        delete metadata[filename];
+        changed = true;
+        console.log(`Removed invalid/orphaned metadata entry: ${filename}`);
       }
     }
 
@@ -115,23 +240,11 @@ async function syncMetadataWithFiles() {
 app.get('/api/saved-files', async (req, res) => {
   try {
     const metadata = await readMetadata();
-
-    // Validate that each file actually exists before including it
-    const fileList = [];
-    for (const filename of Object.keys(metadata)) {
-      const filePath = path.join(SAVED_CSV_DIR, filename);
-      try {
-        await fs.access(filePath);
-        // File exists, include it in the list
-        fileList.push({
-          filename: filename,
-          ...metadata[filename]
-        });
-      } catch {
-        // File doesn't exist, skip it (it will be cleaned up on next server restart)
-        console.warn(`Skipping missing file in metadata: ${filename}`);
-      }
-    }
+    const metadataEntries = await getExistingMetadataEntries(metadata);
+    const fileList = metadataEntries.map(({ filename, info }) => ({
+      filename: filename,
+      ...info
+    }));
 
     // Sort by lastModified descending (newest first)
     fileList.sort((a, b) => new Date(b.lastModified) - new Date(a.lastModified));
@@ -152,19 +265,11 @@ app.get('/api/saved-files/search', async (req, res) => {
     }
 
     const metadata = await readMetadata();
+    const metadataEntries = await getExistingMetadataEntries(metadata);
     const normalizedQuery = query.toLowerCase();
     const results = [];
 
-    for (const [filename, info] of Object.entries(metadata)) {
-      if (filename === 'metadata.json') continue;
-      const filePath = path.join(SAVED_CSV_DIR, filename);
-
-      try {
-        await fs.access(filePath);
-      } catch {
-        continue;
-      }
-
+    for (const { filename, filePath, info } of metadataEntries) {
       let content = '';
       try {
         content = await fs.readFile(filePath, 'utf8');
@@ -197,26 +302,24 @@ app.post('/api/upload', upload.single('file'), async (req, res) => {
       return res.status(400).json({ success: false, error: 'No file uploaded' });
     }
 
-    const metadata = await readMetadata();
     const filename = req.file.filename;
+    const now = new Date().toISOString();
 
-    // Check if file already exists
-    if (metadata[filename]) {
-      // Update existing file metadata
-      metadata[filename].lastModified = new Date().toISOString();
-      metadata[filename].size = req.file.size;
-    } else {
-      // Add new file metadata
-      metadata[filename] = {
-        originalName: req.file.originalname,
-        savedName: filename,
-        uploadedAt: new Date().toISOString(),
-        lastModified: new Date().toISOString(),
-        size: req.file.size
-      };
-    }
-
-    await writeMetadata(metadata);
+    await mutateMetadata((metadata) => {
+      if (metadata[filename]) {
+        metadata[filename].lastModified = now;
+        metadata[filename].size = req.file.size;
+      } else {
+        metadata[filename] = {
+          originalName: req.file.originalname,
+          savedName: filename,
+          uploadedAt: now,
+          lastModified: now,
+          size: req.file.size
+        };
+      }
+      return true;
+    });
 
     res.json({
       success: true,
@@ -232,18 +335,11 @@ app.post('/api/upload', upload.single('file'), async (req, res) => {
 // GET /api/file/:filename - Download a specific saved CSV file
 app.get('/api/file/:filename', async (req, res) => {
   try {
-    const filename = sanitizeFilename(req.params.filename);
-    const filePath = path.join(SAVED_CSV_DIR, filename);
-
-    // Check if file exists
-    try {
-      await fs.access(filePath);
-    } catch {
-      return res.status(404).json({ success: false, error: 'File not found' });
-    }
+    const target = await requireExistingSavedFile(res, req.params.filename);
+    if (!target) return;
 
     // Send file
-    res.sendFile(filePath);
+    res.sendFile(target.filePath);
   } catch (error) {
     console.error('Error downloading file:', error);
     res.status(500).json({ success: false, error: 'Failed to download file' });
@@ -253,45 +349,42 @@ app.get('/api/file/:filename', async (req, res) => {
 // PUT /api/rename/:filename - Rename a saved CSV file
 app.put('/api/rename/:filename', async (req, res) => {
   try {
-    const oldFilename = sanitizeFilename(req.params.filename);
-    const newFilename = sanitizeFilename(req.body.newFilename);
-
-    if (!newFilename) {
+    const newFilenameInput = String(req.body.newFilename || '').trim();
+    if (!newFilenameInput) {
       return res.status(400).json({ success: false, error: 'New filename is required' });
     }
 
-    const oldPath = path.join(SAVED_CSV_DIR, oldFilename);
-    const newPath = path.join(SAVED_CSV_DIR, newFilename);
+    const oldTarget = await requireExistingSavedFile(res, req.params.filename);
+    if (!oldTarget) return;
 
-    // Check if old file exists
-    try {
-      await fs.access(oldPath);
-    } catch {
-      return res.status(404).json({ success: false, error: 'File not found' });
+    const newTarget = resolveSavedFile(newFilenameInput);
+    if (!newTarget) {
+      return res.status(400).json({ success: false, error: 'Invalid filename' });
     }
 
-    // Check if new filename already exists
-    try {
-      await fs.access(newPath);
+    const oldFilename = oldTarget.filename;
+    const newFilename = newTarget.filename;
+
+    if (await fileExists(newTarget.filePath)) {
       return res.status(400).json({ success: false, error: 'A file with that name already exists' });
-    } catch {
-      // File doesn't exist, which is good
     }
+
+    const now = new Date().toISOString();
 
     // Rename file
-    await fs.rename(oldPath, newPath);
+    await fs.rename(oldTarget.filePath, newTarget.filePath);
 
     // Update metadata
-    const metadata = await readMetadata();
-    if (metadata[oldFilename]) {
+    await mutateMetadata((metadata) => {
+      const sourceMetadata = metadata[oldFilename] || createDefaultMetadataEntry(oldFilename, now);
       metadata[newFilename] = {
-        ...metadata[oldFilename],
+        ...sourceMetadata,
         savedName: newFilename,
-        lastModified: new Date().toISOString()
+        lastModified: now
       };
       delete metadata[oldFilename];
-      await writeMetadata(metadata);
-    }
+      return true;
+    });
 
     res.json({
       success: true,
@@ -307,25 +400,18 @@ app.put('/api/rename/:filename', async (req, res) => {
 // DELETE /api/delete/:filename - Delete a saved CSV file
 app.delete('/api/delete/:filename', async (req, res) => {
   try {
-    const filename = sanitizeFilename(req.params.filename);
-    const filePath = path.join(SAVED_CSV_DIR, filename);
-
-    // Check if file exists
-    try {
-      await fs.access(filePath);
-    } catch {
-      return res.status(404).json({ success: false, error: 'File not found' });
-    }
+    const target = await requireExistingSavedFile(res, req.params.filename);
+    if (!target) return;
 
     // Delete file
-    await fs.unlink(filePath);
+    await fs.unlink(target.filePath);
 
     // Update metadata
-    const metadata = await readMetadata();
-    if (metadata[filename]) {
-      delete metadata[filename];
-      await writeMetadata(metadata);
-    }
+    await mutateMetadata((metadata) => {
+      if (!metadata[target.filename]) return false;
+      delete metadata[target.filename];
+      return true;
+    });
 
     res.json({
       success: true,
@@ -340,31 +426,30 @@ app.delete('/api/delete/:filename', async (req, res) => {
 // PUT /api/update/:filename - Update the content of a saved CSV file
 app.put('/api/update/:filename', async (req, res) => {
   try {
-    const filename = sanitizeFilename(req.params.filename);
-    const filePath = path.join(SAVED_CSV_DIR, filename);
     const csvContent = req.body.content;
 
-    if (!csvContent) {
+    if (typeof csvContent !== 'string') {
       return res.status(400).json({ success: false, error: 'No content provided' });
     }
 
-    // Check if file exists
-    try {
-      await fs.access(filePath);
-    } catch {
-      return res.status(404).json({ success: false, error: 'File not found' });
-    }
+    const target = await requireExistingSavedFile(res, req.params.filename);
+    if (!target) return;
 
     // Write new content to file
-    await fs.writeFile(filePath, csvContent, 'utf8');
+    await fs.writeFile(target.filePath, csvContent, 'utf8');
 
     // Update metadata
-    const metadata = await readMetadata();
-    if (metadata[filename]) {
-      metadata[filename].lastModified = new Date().toISOString();
-      metadata[filename].size = Buffer.byteLength(csvContent, 'utf8');
-      await writeMetadata(metadata);
-    }
+    const now = new Date().toISOString();
+    await mutateMetadata((metadata) => {
+      const existingMetadata = metadata[target.filename] || createDefaultMetadataEntry(target.filename, now);
+      metadata[target.filename] = {
+        ...existingMetadata,
+        savedName: target.filename,
+        lastModified: now,
+        size: Buffer.byteLength(csvContent, 'utf8')
+      };
+      return true;
+    });
 
     res.json({
       success: true,
@@ -379,18 +464,11 @@ app.put('/api/update/:filename', async (req, res) => {
 // GET /api/notes/:filename - Get notes for a saved CSV file
 app.get('/api/notes/:filename', async (req, res) => {
   try {
-    const filename = sanitizeFilename(req.params.filename);
-    const filePath = path.join(SAVED_CSV_DIR, filename);
-
-    // Check if file exists
-    try {
-      await fs.access(filePath);
-    } catch {
-      return res.status(404).json({ success: false, error: 'File not found' });
-    }
+    const target = await requireExistingSavedFile(res, req.params.filename);
+    if (!target) return;
 
     const metadata = await readMetadata();
-    const notes = metadata[filename]?.notes || '';
+    const notes = metadata[target.filename]?.notes || '';
 
     res.json({
       success: true,
@@ -405,27 +483,25 @@ app.get('/api/notes/:filename', async (req, res) => {
 // PUT /api/notes/:filename - Update notes for a saved CSV file
 app.put('/api/notes/:filename', async (req, res) => {
   try {
-    const filename = sanitizeFilename(req.params.filename);
-    const filePath = path.join(SAVED_CSV_DIR, filename);
     const notes = req.body.notes;
 
     if (notes === undefined) {
       return res.status(400).json({ success: false, error: 'No notes provided' });
     }
 
-    // Check if file exists
-    try {
-      await fs.access(filePath);
-    } catch {
-      return res.status(404).json({ success: false, error: 'File not found' });
-    }
+    const target = await requireExistingSavedFile(res, req.params.filename);
+    if (!target) return;
 
     // Update metadata with notes
-    const metadata = await readMetadata();
-    if (metadata[filename]) {
-      metadata[filename].notes = notes;
-      await writeMetadata(metadata);
-    }
+    const now = new Date().toISOString();
+    await mutateMetadata((metadata) => {
+      const existingMetadata = metadata[target.filename] || createDefaultMetadataEntry(target.filename, now);
+      metadata[target.filename] = {
+        ...existingMetadata,
+        notes: notes
+      };
+      return true;
+    });
 
     res.json({
       success: true,
@@ -435,6 +511,26 @@ app.put('/api/notes/:filename', async (req, res) => {
     console.error('Error updating notes:', error);
     res.status(500).json({ success: false, error: 'Failed to update notes' });
   }
+});
+
+app.use((err, req, res, next) => {
+  if (err instanceof multer.MulterError) {
+    if (err.code === 'LIMIT_FILE_SIZE') {
+      return res.status(413).json({ success: false, error: 'File too large. Maximum size is 10MB.' });
+    }
+    return res.status(400).json({ success: false, error: err.message });
+  }
+
+  if (err && (err.code === 'INVALID_FILE_TYPE' || err.code === 'INVALID_FILENAME')) {
+    return res.status(err.status || 400).json({ success: false, error: err.message });
+  }
+
+  if (req.path.startsWith('/api/')) {
+    console.error('Unhandled API error:', err);
+    return res.status(err?.status || 500).json({ success: false, error: 'Internal server error' });
+  }
+
+  return next(err);
 });
 
 const PORT = process.env.PORT || 3000;
